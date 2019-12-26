@@ -1,4 +1,4 @@
-// Copyright 2018 The Wire Authors
+// Copyright 2019 The Wire Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//+build wireinject
+
 package main
 
-import "fmt"
+import (
+	"fmt"
 
-type S struct {
-	Foo string
-}
+	"github.com/google/wire"
+)
 
-func provideS() *S {
-	return &S{Foo: "Hello, World!"}
-}
-
-func main() {
-	fmt.Println(injectedMessage())
-	fmt.Println("pointer to " + *injectedMessagePtr())
+func injectStringer(s MyString) fmt.Stringer {
+	wire.Build(wire.Bind(new(fmt.Stringer), new(MyString)))
+	return nil
 }

@@ -233,11 +233,11 @@ have a provider in the same set that provides the concrete type.
 
 ### Struct Providers
 
-Structs can also be marked as providers. Use the `wire.Struct` function to
-inject a struct type and tell the injector which field(s) should be injected.
+Structs can be constructed using provided types. Use the `wire.Struct` function
+to construct a struct type and tell the injector which field(s) should be injected.
 The injector will fill in each field using the provider for the field's type.
-For a given struct type `S`, this would provide both `S` and `*S`. For example,
-given the following providers:
+For the resulting struct type `S`, `wire.Struct` provides both `S` and `*S`. For
+example, given the following providers:
 
 ```go
 type Foo int
@@ -298,7 +298,33 @@ func injectFooBar() FooBar {
 }
 ```
 
-And similarly if the injector needed a `*FooBar`.
+If the injector returned a `*FooBar` instead of a `FooBar`, the generated injector
+would look like this:
+
+```go
+func injectFooBar() *FooBar {
+    foo := ProvideFoo()
+    fooBar := &FooBar{
+        MyFoo: foo,
+    }
+    return fooBar
+}
+```
+
+It is sometimes useful to prevent certain fields from being filled in by the
+injector, especially when passing `*` to `wire.Struct`. You can tag a field with
+`` `wire:"-"` `` to have Wire ignore such fields. For example:
+
+```go
+type Foo struct {
+    mu sync.Mutex `wire:"-"`
+    Bar Bar
+}
+```
+
+When you provide the `Foo` type using `wire.Struct(new(Foo), "*")`, Wire will
+automatically omit the `mu` field. Additionally, it is an error to explicitly
+specify a prevented field as in `wire.Struct(new(Foo), "mu")`.
 
 ### Binding Values
 
@@ -397,6 +423,8 @@ func injectedMessage() string {
 ```
 
 You can add as many field names to a `wire.FieldsOf` function as you like.
+For a given field type `T`, `FieldsOf` provides at least `T`; if the struct
+argument is a pointer to a struct, then `FieldsOf` also provides `*T`.
 
 ### Cleanup functions
 

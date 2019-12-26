@@ -63,7 +63,8 @@ func (gen GenerateResult) Commit() error {
 // GenerateOptions holds options for Generate.
 type GenerateOptions struct {
 	// Header will be inserted at the start of each generated file.
-	Header []byte
+	Header           []byte
+	PrefixOutputFile string
 }
 
 // Generate performs dependency injection for the packages that match the given
@@ -94,7 +95,7 @@ func Generate(ctx context.Context, wd string, env []string, patterns []string, o
 			generated[i].Errs = append(generated[i].Errs, err)
 			continue
 		}
-		generated[i].OutputPath = filepath.Join(outDir, "wire_gen.go")
+		generated[i].OutputPath = filepath.Join(outDir, opts.PrefixOutputFile+"wire_gen.go")
 		g := newGen(pkg)
 		injectorFiles, errs := generateInjectors(g, pkg)
 		if len(errs) > 0 {
@@ -366,12 +367,12 @@ func (g *gen) inject(pos token.Pos, name string, sig *types.Signature, set *Prov
 	}
 
 	// Perform one pass to collect all imports, followed by the real pass.
-	injectPass(name, sig, calls, &injectorGen{
+	injectPass(name, sig, calls, set, &injectorGen{
 		g:       g,
 		errVar:  disambiguate("err", g.nameInFileScope),
 		discard: true,
 	})
-	injectPass(name, sig, calls, &injectorGen{
+	injectPass(name, sig, calls, set, &injectorGen{
 		g:       g,
 		errVar:  disambiguate("err", g.nameInFileScope),
 		discard: false,
@@ -585,7 +586,7 @@ type injectorGen struct {
 
 // injectPass generates an injector given the output from analysis.
 // The sig passed in should be verified.
-func injectPass(name string, sig *types.Signature, calls []call, ig *injectorGen) {
+func injectPass(name string, sig *types.Signature, calls []call, set *ProviderSet, ig *injectorGen) {
 	params := sig.Params()
 	injectSig, err := funcOutput(sig)
 	if err != nil {
@@ -642,12 +643,7 @@ func injectPass(name string, sig *types.Signature, calls []call, ig *injectorGen
 		}
 	}
 	if len(calls) == 0 {
-		for i := 0; i < params.Len(); i++ {
-			if types.Identical(injectSig.out, params.At(i).Type()) {
-				ig.p("\treturn %s", ig.paramNames[i])
-				break
-			}
-		}
+		ig.p("\treturn %s", ig.paramNames[set.For(injectSig.out).Arg().Index])
 	} else {
 		ig.p("\treturn %s", ig.localNames[len(calls)-1])
 	}
@@ -731,10 +727,14 @@ func (ig *injectorGen) valueExpr(lname string, c *call) {
 
 func (ig *injectorGen) fieldExpr(lname string, c *call) {
 	a := c.args[0]
+	ig.p("\t%s := ", lname)
+	if c.ptrToField {
+		ig.p("&")
+	}
 	if a < len(ig.paramNames) {
-		ig.p("\t%s := %s.%s\n", lname, ig.paramNames[a], c.name)
+		ig.p("%s.%s\n", ig.paramNames[a], c.name)
 	} else {
-		ig.p("\t%s := %s.%s\n", lname, ig.localNames[a-len(ig.paramNames)], c.name)
+		ig.p("%s.%s\n", ig.localNames[a-len(ig.paramNames)], c.name)
 	}
 }
 
@@ -845,7 +845,7 @@ func typeVariableName(t types.Type, defaultName string, transform func(string) s
 
 	// See if there's an unambiguous name; if so, use it.
 	for _, name := range names {
-		if !reservedKeyword[name] && !collides(name) {
+		if !token.Lookup(name).IsKeyword() && !collides(name) {
 			return name
 		}
 	}
@@ -903,40 +903,10 @@ func export(name string) string {
 	return sbuf.String()
 }
 
-// reservedKeyword is a set of Go's reserved keywords:
-// https://golang.org/ref/spec#Keywords
-var reservedKeyword = map[string]bool{
-	"break":       true,
-	"case":        true,
-	"chan":        true,
-	"const":       true,
-	"continue":    true,
-	"default":     true,
-	"defer":       true,
-	"else":        true,
-	"fallthrough": true,
-	"for":         true,
-	"func":        true,
-	"go":          true,
-	"goto":        true,
-	"if":          true,
-	"import":      true,
-	"interface":   true,
-	"map":         true,
-	"package":     true,
-	"range":       true,
-	"return":      true,
-	"select":      true,
-	"struct":      true,
-	"switch":      true,
-	"type":        true,
-	"var":         true,
-}
-
 // disambiguate picks a unique name, preferring name if it is already unique.
 // It also disambiguates against Go's reserved keywords.
 func disambiguate(name string, collides func(string) bool) string {
-	if !reservedKeyword[name] && !collides(name) {
+	if !token.Lookup(name).IsKeyword() && !collides(name) {
 		return name
 	}
 	buf := []byte(name)
@@ -947,7 +917,7 @@ func disambiguate(name string, collides func(string) bool) string {
 	for n := 2; ; n++ {
 		buf = strconv.AppendInt(buf[:base], int64(n), 10)
 		sbuf := string(buf)
-		if !reservedKeyword[sbuf] && !collides(sbuf) {
+		if !token.Lookup(sbuf).IsKeyword() && !collides(sbuf) {
 			return sbuf
 		}
 	}

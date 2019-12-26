@@ -1,4 +1,4 @@
-// Copyright 2018 The Wire Authors
+// Copyright 2019 The Wire Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,17 +14,14 @@
 
 package main
 
-import "fmt"
-
-type S struct {
-	Foo string
-}
-
-func provideS() *S {
-	return &S{Foo: "Hello, World!"}
-}
+import (
+	"fmt"
+)
 
 func main() {
-	fmt.Println(injectedMessage())
-	fmt.Println("pointer to " + *injectedMessagePtr())
+	fmt.Println(inject(A{"Hello"}))
+}
+
+type A struct {
+	B string
 }

@@ -22,6 +22,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -219,7 +220,7 @@ type InjectorArgs struct {
 	Pos token.Pos
 }
 
-// Field describes a list of fields from a struct.
+// Field describes a specific field selected from a struct.
 type Field struct {
 	// Parent is the struct or pointer to the struct that the field belongs to.
 	Parent types.Type
@@ -230,8 +231,10 @@ type Field struct {
 	// Pos is the source position of the field declaration.
 	// defining these fields.
 	Pos token.Pos
-	// Out is the field's type.
-	Out types.Type
+	// Out is the field's provided types. The first element provides the
+	// field type. If the field is coming from a pointer to a struct,
+	// there will be a second element providing a pointer to the field.
+	Out []types.Type
 }
 
 // Load finds all the provider sets in the packages that match the given
@@ -457,7 +460,7 @@ func newObjectCache(pkgs []*packages.Package) *objectCache {
 }
 
 // get converts a Go object into a Wire structure. It may return a *Provider, an
-// *IfaceBinding, a *ProviderSet, a *Value, or a *Fields.
+// *IfaceBinding, a *ProviderSet, a *Value, or a []*Field.
 func (oc *objectCache) get(obj types.Object) (val interface{}, errs []error) {
 	ref := objRef{
 		importPath: obj.Pkg().Path(),
@@ -514,7 +517,7 @@ func (oc *objectCache) varDecl(obj *types.Var) *ast.ValueSpec {
 }
 
 // processExpr converts an expression into a Wire structure. It may return a
-// *Provider, an *IfaceBinding, a *ProviderSet, a *Value or a *Field.
+// *Provider, an *IfaceBinding, a *ProviderSet, a *Value or a []*Field.
 func (oc *objectCache) processExpr(info *types.Info, pkgPath string, expr ast.Expr, varName string) (interface{}, []error) {
 	exprPos := oc.fset.Position(expr.Pos())
 	expr = astutil.Unparen(expr)
@@ -802,7 +805,7 @@ func processStructProvider(fset *token.FileSet, info *types.Info, call *ast.Call
 	st, ok := structPtr.Elem().Underlying().(*types.Struct)
 	if !ok {
 		return nil, notePosition(fset.Position(call.Pos()),
-			fmt.Errorf(firstArgReqFormat, types.TypeString(st, nil)))
+			fmt.Errorf(firstArgReqFormat, types.TypeString(structPtr, nil)))
 	}
 
 	stExpr := call.Args[0].(*ast.CallExpr)
@@ -816,7 +819,7 @@ func processStructProvider(fset *token.FileSet, info *types.Info, call *ast.Call
 	}
 	if allFields(call) {
 		for i := 0; i < st.NumFields(); i++ {
-			if isPrevented(st, i) {
+			if isPrevented(st.Tag(i)) {
 				continue
 			}
 			f := st.Field(i)
@@ -863,9 +866,8 @@ func allFields(call *ast.CallExpr) bool {
 // isPrevented checks whether field i is prevented by tag "-".
 // Since this is the only tag used by wire, we can do string comparison
 // without using reflect.
-// TODO(#179): parse the wire tag more robustly.
-func isPrevented(st *types.Struct, i int) bool {
-	return strings.Contains(st.Tag(i), `wire:"-"`)
+func isPrevented(tag string) bool {
+	return reflect.StructTag(tag).Get("wire") == "-"
 }
 
 // processBind creates an interface binding from a wire.Bind call.
@@ -988,7 +990,7 @@ func processInterfaceValue(fset *token.FileSet, info *types.Info, call *ast.Call
 	}, nil
 }
 
-// processFieldsOf creates a list of fields from a wire.FieldsOf call.
+// processFieldsOf creates a slice of fields from a wire.FieldsOf call.
 func processFieldsOf(fset *token.FileSet, info *types.Info, call *ast.CallExpr) ([]*Field, error) {
 	// Assumes that call.Fun is wire.FieldsOf.
 
@@ -1005,6 +1007,7 @@ func processFieldsOf(fset *token.FileSet, info *types.Info, call *ast.CallExpr) 
 	}
 
 	var struc *types.Struct
+	isPtrToStruct := false
 	switch t := structPtr.Elem().Underlying().(type) {
 	case *types.Pointer:
 		struc, ok = t.Elem().Underlying().(*types.Struct)
@@ -1012,6 +1015,7 @@ func processFieldsOf(fset *token.FileSet, info *types.Info, call *ast.CallExpr) 
 			return nil, notePosition(fset.Position(call.Pos()),
 				fmt.Errorf(firstArgReqFormat, types.TypeString(struc, nil)))
 		}
+		isPtrToStruct = true
 	case *types.Struct:
 		struc = t
 	default:
@@ -1029,12 +1033,18 @@ func processFieldsOf(fset *token.FileSet, info *types.Info, call *ast.CallExpr) 
 		if err != nil {
 			return nil, notePosition(fset.Position(call.Pos()), err)
 		}
+		out := []types.Type{v.Type()}
+		if isPtrToStruct {
+			// If the field is from a pointer to a struct, then
+			// wire.Fields also provides a pointer to the field.
+			out = append(out, types.NewPointer(v.Type()))
+		}
 		fields = append(fields, &Field{
 			Parent: structPtr.Elem(),
 			Name:   v.Name(),
 			Pkg:    v.Pkg(),
 			Pos:    v.Pos(),
-			Out:    v.Type(),
+			Out:    out,
 		})
 	}
 	return fields, nil
@@ -1049,7 +1059,7 @@ func checkField(f ast.Expr, st *types.Struct) (*types.Var, error) {
 	}
 	for i := 0; i < st.NumFields(); i++ {
 		if strings.EqualFold(strconv.Quote(st.Field(i).Name()), b.Value) {
-			if isPrevented(st, i) {
+			if isPrevented(st.Tag(i)) {
 				return nil, fmt.Errorf("%s is prevented from injecting by wire", b.Value)
 			}
 			return st.Field(i), nil
